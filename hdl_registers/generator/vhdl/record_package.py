@@ -167,9 +167,137 @@ end package body;
 {init_str}
   );
   -- Convert a record of the {register_description} to SLV.
-  function to_slv(data : {register_name}_t) return register_t;
+  function to_slv(data : {register_name}_t; unused_vals : std_ulogic := '-') return register_t;
   -- Convert an SLV register value to the record for the {register_description}.
   function to_{register_name}(data : register_t) return {register_name}_t;
+
+"""
+
+        return vhdl
+
+    def _register_array_conversion_implementation(self, direction: HardwareAccessDirection) -> str:
+        vhdl = ""
+
+        for register_array in self.iterate_hardware_accessible_register_arrays(direction=direction):
+            array_name = self.qualified_register_array_name(register_array)
+
+            slv_array_type = f"{array_name}_{direction.name.lower()}_slv_array_t"
+            slv_type = f"{array_name}_{direction.name.lower()}_slv_t"
+            record_type = f"{array_name}_{direction.name.lower()}_t"
+
+            to_slv_array = ""
+            to_record_from_slv_array = ""
+            to_slv = ""
+            to_record_from_slv = ""
+
+            for i, register in enumerate(
+                self.iterate_hardware_accessible_array_registers(
+                    register_array=register_array, direction=direction
+                )
+            ):
+                register_name = self.qualified_register_name(
+                    register=register, register_array=register_array
+                )
+
+                slv_indexing = f"({i} + 1)*register_t'length - 1 downto {i}*register_t'length"
+
+                if register.fields:
+                    to_slv_array += (
+                        f"    result({i}) := to_slv(data.{register.name}, unused_vals);\n"
+                    )
+                    to_record_from_slv_array += (
+                        f"    result.{register.name} := to_{register_name}(data({i}));\n"
+                    )
+                    to_slv += f"    result({slv_indexing}) := to_slv(data.{register.name}, \
+unused_vals);\n"
+                    to_record_from_slv += (
+                        f"    result.{register.name} := to_{register_name}(data({slv_indexing}));\n"
+                    )
+                else:
+                    to_slv_array += f"    result({i}) := data.{register.name};\n"
+                    to_record_from_slv_array += f"    result.{register.name} := data({i});\n"
+                    to_slv += f"    result({slv_indexing}) := data.{register.name};\n"
+                    to_record_from_slv += f"    result.{register.name} := data({slv_indexing});\n"
+
+            vhdl += f"""\
+  function to_{array_name}_{direction.name.lower()}(data: {slv_array_type}) return {record_type} is
+    variable result : {record_type} := {array_name}_{direction.name.lower()}_init;
+  begin
+{to_record_from_slv_array}
+    return result;
+  end function;
+
+  function to_slv_array(data: {record_type}; unused_vals : std_ulogic := '-') return \
+{slv_array_type} is
+    variable result : {slv_array_type} := (others => (others => unused_vals));
+  begin
+{to_slv_array}
+    return result;
+  end function;
+
+  function to_{array_name}_{direction.name.lower()}(data: {slv_type}) return {record_type} is
+    variable result : {record_type} := {array_name}_{direction.name.lower()}_init;
+  begin
+{to_record_from_slv}
+    return result;
+  end function;
+
+  function to_slv(data: {record_type}; unused_vals : std_ulogic := '-') return {slv_type} is
+    variable result : {slv_type} := (others => unused_vals);
+  begin
+{to_slv}
+    return result;
+  end function;
+
+"""
+
+        return vhdl
+
+    def _register_array_conversion_declaration(self, direction: HardwareAccessDirection) -> str:
+        vhdl = ""
+
+        for register_array in self.iterate_hardware_accessible_register_arrays(direction=direction):
+            array_name = self.qualified_register_array_name(register_array)
+
+            reg_cnt = len(
+                list(
+                    self.iterate_hardware_accessible_array_registers(
+                        register_array=register_array, direction=direction
+                    )
+                )
+            )
+
+            range_type = f"{array_name}_{direction.name.lower()}_range_t"
+            slv_array_type = f"{array_name}_{direction.name.lower()}_slv_array_t"
+            slv_type = f"{array_name}_{direction.name.lower()}_slv_t"
+            record_type = f"{array_name}_{direction.name.lower()}_t"
+
+            enum_type_declaration = f"subtype {range_type} is natural range 0 to {reg_cnt};"
+            slv_array_type_declaration = (
+                f"type {slv_array_type} is array ({range_type}) of register_t;"
+            )
+            slv_type_declaration = f"subtype {slv_type} is \
+std_ulogic_vector({slv_array_type}'length*register_t'length - 1 downto 0);"
+
+            to_reg_array_from_slv_array_declaration = f"function \
+to_{array_name}_{direction.name.lower()}(data: {slv_array_type}) return {record_type};"
+            to_slv_array_declaration = f"function to_slv_array(data: {record_type}; \
+unused_vals : std_ulogic := '-') return {slv_array_type};"
+
+            to_reg_array_from_slv_declaration = f"function \
+to_{array_name}_{direction.name.lower()}(data: {slv_type}) return {record_type};"
+            to_slv_declaration = f"function to_slv(data: {record_type}; \
+unused_vals : std_ulogic := '-') return {slv_type};"
+
+            vhdl += f"""
+  -- Declarations to be able to convert the fields of an register array to slv 2d vectors and back.
+  {enum_type_declaration}
+  {slv_array_type_declaration}
+  {slv_type_declaration}
+  {to_reg_array_from_slv_array_declaration}
+  {to_slv_array_declaration}
+  {to_reg_array_from_slv_declaration}
+  {to_slv_declaration}
 
 """
 
@@ -198,7 +326,8 @@ end package body;
             vhdl += f"""\
   -- Convert record with everything in the '{direction.name.lower()}' direction to SLV \
 register list.
-  function to_slv(data : {self.name}_regs_{direction.name.lower()}_t) return {self.name}_regs_t;
+  function to_slv(data : {self.name}_regs_{direction.name.lower()}_t; \
+unused_vals : std_ulogic := '-') return {self.name}_regs_t;
 
 """
 
@@ -212,6 +341,17 @@ register list.
 '{direction.name.lower()}' direction.
   function to_{self.name}_regs_{direction.name.lower()}(data : {self.name}_regs_t) \
 return {self.name}_regs_{direction.name.lower()}_t;
+
+"""
+        vhdl += self._register_array_conversion_declaration(HardwareAccessDirection.DOWN)
+        vhdl += self._register_array_conversion_declaration(HardwareAccessDirection.UP)
+
+        if self.has_any_hardware_accessible_register(HardwareAccessDirection.DOWN):
+            vhdl += f"""\
+-- Convert record with everything in the '{direction.name.lower()}' direction to SLV \
+register list.
+function to_slv(data : {self.name}_regs_{direction.name.lower()}_t; \
+unused_vals : std_ulogic := '-') return std_ulogic_vector;
 
 """
 
@@ -462,8 +602,8 @@ to the record above.
             # Set "don't care" on the bits that have no field, so that a register value comparison
             # can be true even if there is junk in the unused bits.
             return f"""\
-  function to_slv(data : {register_name}_t) return register_t is
-    variable result : register_t := (others => '-');
+  function to_slv(data : {register_name}_t; unused_vals : std_ulogic := '-') return register_t is
+    variable result : register_t := (others => unused_vals);
   begin
 {to_slv}
     return result;
@@ -484,6 +624,59 @@ to the record above.
 
         return vhdl
 
+    def _register_record_down_to_slv(self) -> str:
+        """
+        Conversion function implementation for converting a record of all the 'down' registers
+        to a register SLV list.
+
+        This function assumes that the register map has registers in the given direction.
+        """
+        to_slv = ""
+
+        idx = 0
+
+        for register, register_array in self.iterate_hardware_accessible_registers(
+            direction=HardwareAccessDirection.DOWN
+        ):
+            self.qualified_register_name(register=register, register_array=register_array)
+
+            if register_array is None:
+                result = (
+                    f"    result(({idx} + 1)*register_t'length -1 downto {idx}*register_t'length)"
+                )
+                record = f"data.{register.name}"
+
+                if register.fields:
+                    to_slv += f"{result} := to_slv({record}, unused_vals);\n"
+                else:
+                    to_slv += f"{result} := {record};\n"
+                idx += 1
+
+            else:
+                for array_idx in range(register_array.length):
+                    result = f"    result(({idx} + 1)*register_t'length -1 downto \
+{idx}*register_t'length)"
+                    record = f"data.{register_array.name}({array_idx}).{register.name}"
+
+                    if register.fields:
+                        to_slv += f"{result} := to_slv({record}, unused_vals);\n"
+                    else:
+                        to_slv += f"{result} := {record};\n"
+                    idx += 1
+
+        vector_size = f"{idx}*register_t'length"
+
+        return f"""\
+  function to_slv(data : {self.name}_regs_down_t; unused_vals : std_ulogic := '-') \
+return std_ulogic_vector is
+    variable result : std_ulogic_vector({vector_size} - 1 downto 0) := (others => unused_vals);
+  begin
+{to_slv}
+    return result;
+  end function;
+
+"""
+
     def _register_record_conversion_implementations(self) -> str:
         """
         Conversion function implementations to/from SLV for the records containing all
@@ -496,6 +689,14 @@ to the record above.
 
         if self.has_any_hardware_accessible_register(direction=HardwareAccessDirection.DOWN):
             vhdl += self._get_registers_down_to_record_function()
+
+        if self.has_any_hardware_accessible_register(direction=HardwareAccessDirection.DOWN):
+            vhdl += self._register_record_down_to_slv()
+
+        vhdl += self._register_array_conversion_implementation(
+            direction=HardwareAccessDirection.DOWN
+        )
+        vhdl += self._register_array_conversion_implementation(direction=HardwareAccessDirection.UP)
 
         return vhdl
 
@@ -520,7 +721,7 @@ to the record above.
                 record = f"data.{register.name}"
 
                 if register.fields:
-                    to_slv += f"{result} := to_slv({record});\n"
+                    to_slv += f"{result} := to_slv({record}, unused_vals);\n"
                 else:
                     to_slv += f"{result} := {record};\n"
 
@@ -530,12 +731,13 @@ to the record above.
                     record = f"data.{register_array.name}({array_idx}).{register.name}"
 
                     if register.fields:
-                        to_slv += f"{result} := to_slv({record});\n"
+                        to_slv += f"{result} := to_slv({record}, unused_vals);\n"
                     else:
                         to_slv += f"{result} := {record};\n"
 
         return f"""\
-  function to_slv(data : {self.name}_regs_up_t) return {self.name}_regs_t is
+  function to_slv(data : {self.name}_regs_up_t; unused_vals : std_ulogic := '-') return \
+{self.name}_regs_t is
     variable result : {self.name}_regs_t := {self.name}_regs_init;
   begin
 {to_slv}
