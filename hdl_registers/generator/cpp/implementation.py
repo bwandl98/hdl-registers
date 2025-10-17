@@ -138,6 +138,9 @@ class CppImplementationGenerator(CppGeneratorCommon):
             cpp_code += "\n".join(methods_cpp)
             cpp_code += separator
 
+        cpp_code += self._get_regs_struct_setter()
+        cpp_code += self._get_regs_struct_getter()
+
         cpp_code += "\n"
         cpp_code_top = f'#include "include/{self.name}.h"\n\n'
 
@@ -814,3 +817,48 @@ class CppImplementationGenerator(CppGeneratorCommon):
             return ("", "field_value")
 
         raise TypeError(f"Got unexpected field type: {field}")
+
+    def _get_regs_struct_setter(self) -> str:
+        cpp_code = f"  void {self._class_name}::{self._regs_struct_setter_signature()}\n"
+        cpp_code += "  {\n"
+        for register, register_array in self.iterate_registers():
+            setter_name = self._register_setter_name(
+                register=register, register_array=register_array, raw=False
+            )
+
+            if register.mode.software_can_write:
+                if register_array is not None:
+                    cpp_code += f"    for(size_t i = 0; i < {register_array.length}; i++){'{'}\n"
+                    cpp_code += f"      {setter_name}"
+                    cpp_code += f"(i, regs.{register_array.name}_{register.name}[i]);\n"
+                    cpp_code += "     }\n"
+                else:
+                    cpp_code += f"    {setter_name}(regs.{register.name});\n"
+
+        cpp_code += "  };\n\n"
+
+        return cpp_code
+
+    def _get_regs_struct_getter(self) -> str:
+        cpp_code = f"  {self._get_regs_struct_name()} {self._class_name}::get() const\n"
+        cpp_code += "  {\n"
+        cpp_code += f"    {self._get_regs_struct_name()} regs;\n"
+        for register, register_array in self.iterate_registers():
+            getter_name = self._register_getter_name(
+                register=register, register_array=register_array, raw=False
+            )
+
+            if register.mode.software_can_read:
+                if register_array is not None:
+                    cpp_code += f"    for(size_t i = 0; i < {register_array.length}; i++){'{'}\n"
+                    cpp_code += (
+                        f"      regs.{register_array.name}_{register.name}[i] = {getter_name}(i);\n"
+                    )
+                    cpp_code += "     }\n"
+                else:
+                    cpp_code += f"    regs.{register.name} = {getter_name}();\n"
+
+        cpp_code += "    return regs;\n"
+        cpp_code += "  };\n\n"
+
+        return cpp_code

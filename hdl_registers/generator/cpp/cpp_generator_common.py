@@ -159,6 +159,15 @@ namespace fpga_regs
 
         raise ValueError(f"Got unknown field type: {field}")
 
+    def _get_regs_struct_name(self) -> str:
+        return f"{self._class_name}Regs"
+
+    def _regs_struct_getter_signature(self) -> str:
+        return "get() const"
+
+    def _regs_struct_setter_signature(self) -> str:
+        return f"set(const {self._get_regs_struct_name()}& regs) const"
+
     @staticmethod
     def _register_getter_name(
         register: Register, register_array: RegisterArray | None, raw: bool

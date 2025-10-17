@@ -95,6 +95,24 @@ class CppHeaderGenerator(CppGeneratorCommon):
             if register_has_private_methods:
                 private_cpp += separator
 
+        public_cpp += "\n"
+
+        public_cpp += self._get_override_function(
+            comment=self.comment(
+                "Writes all writeable registers with the values provided in the struct parameter."
+            ),
+            return_type="void",
+            signature=self._regs_struct_setter_signature(),
+        )
+
+        public_cpp += self._get_override_function(
+            comment=self.comment(
+                "Reads out all available registers and returns the regsiters structure."
+            ),
+            return_type=self._get_regs_struct_name(),
+            signature=self._regs_struct_getter_signature(),
+        )
+
         cpp_code = f"""\
   class {self._class_name} : public I{self._class_name}
   {{

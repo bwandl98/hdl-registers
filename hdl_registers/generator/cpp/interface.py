@@ -76,6 +76,9 @@ class CppInterfaceGenerator(CppGeneratorCommon):
         accessing registers and fields.
         """
         cpp_code = f"""{self._get_attributes()}\
+
+{self._get_regs_struct_declaration()}
+
   class I{self._class_name}
   {{
   public:
@@ -104,6 +107,10 @@ class CppInterfaceGenerator(CppGeneratorCommon):
                 cpp_code += self._get_setters(register=register, register_array=register_array)
 
             cpp_code += separator
+
+        cpp_code += self._get_regs_struct_setter()
+        cpp_code += self._get_regs_struct_getter()
+        cpp_code += self._get_regs_struct_default_constant()
 
         cpp_code += "  };\n\n"
 
@@ -187,23 +194,24 @@ class CppInterfaceGenerator(CppGeneratorCommon):
 {indentation}namespace {field.name}
 {indentation}{{
 {indentation}  // The number of bits that the field occupies.
-{indentation}  static const size_t width = {field.width};
+{indentation}  static constexpr size_t width = {field.width};
 {indentation}  // The bit index of the lowest bit in the field.
-{indentation}  static const size_t shift = {field.base_index};
+{indentation}  static constexpr size_t shift = {field.base_index};
 {indentation}  // The bit mask of the field, at index zero.
-{indentation}  static const uint32_t mask_at_base = (1uLL << width) - 1;
+{indentation}  static constexpr uint32_t mask_at_base = (1uLL << width) - 1;
 {indentation}  // The bit mask of the field, at the field's bit index.
-{indentation}  static const uint32_t mask_shifted = mask_at_base << shift;
+{indentation}  static constexpr uint32_t mask_shifted = mask_at_base << shift;
 {typedef}
 {indentation}  // Initial value of the field at device startup/reset.
-{indentation}  static const {field_type} default_value = {default_value};
+{indentation}  static constexpr {field_type} default_value = {default_value};
 {indentation}  // Raw representation of the initial value, at the the field's bit index.
-{indentation}  static const uint32_t default_value_raw = {default_value_raw} << shift;
+{indentation}  static constexpr uint32_t default_value_raw = {default_value_raw} << shift;
 {indentation}}}
 """)
             struct_values_cpp.append(f"{indentation}  {field_type_struct} {field.name};")
             default_values_cpp.append(f"{indentation}  {field.name}::default_value,")
 
+        struct_ostream_operator_cpp = self._get_register_value_ostream_operator(register)
         indentation = self.get_indentation(indent=indent)
         attribute_cpp = "\n".join(attributes_cpp)
         struct_value_cpp = "\n".join(struct_values_cpp)
@@ -217,9 +225,10 @@ class CppInterfaceGenerator(CppGeneratorCommon):
 {indentation}  // in a native C++ representation.
 {indentation}  struct Value {{
 {struct_value_cpp}
+{struct_ostream_operator_cpp}
 {indentation}  }};
 {indentation}  // Initial value of the register at device startup/reset.
-{indentation}  const Value default_value = {{
+{indentation}  constexpr Value default_value = {{
 {default_value_cpp}
 {indentation}  }};
 {indentation}}}
@@ -274,7 +283,7 @@ class CppInterfaceGenerator(CppGeneratorCommon):
     namespace {register_array.name}
     {{
       // Number of times the registers of the array are repeated.
-      static const auto array_length = {register_array.length};
+      static constexpr auto array_length = {register_array.length};
 
 {register_cpp}\
     }}
@@ -285,10 +294,10 @@ class CppInterfaceGenerator(CppGeneratorCommon):
 
         for constant in self.iterate_constants():
             if isinstance(constant, BooleanConstant):
-                type_declaration = " bool"
+                type_declaration = "expr bool"
                 value = str(constant.value).lower()
             elif isinstance(constant, IntegerConstant):
-                type_declaration = " int"
+                type_declaration = "expr int"
                 value = str(constant.value)
             elif isinstance(constant, FloatConstant):
                 # Expand "const" to "constexpr", which is needed for static floats:
@@ -324,7 +333,7 @@ class CppInterfaceGenerator(CppGeneratorCommon):
             num_registers = self.register_list.register_objects[-1].index + 1
 
         cpp_code = self.comment("Number of registers within this register list.")
-        cpp_code += f"    static const size_t num_registers = {num_registers}uL;\n\n"
+        cpp_code += f"    static constexpr size_t num_registers = {num_registers}uL;\n\n"
         return cpp_code
 
     def _get_getters(self, register: Register, register_array: RegisterArray | None) -> str:
@@ -429,3 +438,105 @@ class CppInterfaceGenerator(CppGeneratorCommon):
             )
 
         return "\n".join(cpp_code)
+
+    def _get_register_value_ostream_operator(self, register: Register) -> str:
+        cpp_code = "\n        friend std::ostream& operator<<(std::ostream& os, const Value& reg)\n"
+        cpp_code += "        {\n"
+        for field in register.fields:
+            cpp_code += f'          os << reg.{field.name} << ", ";\n'
+
+        cpp_code += "          return os;\n"
+        cpp_code += "        }\n"
+        cpp_code += "\n"
+
+        cpp_code += "        operator std::string() const\n"
+        cpp_code += "        {\n"
+        cpp_code += "          std::ostringstream oss;\n"
+        cpp_code += "          oss << *this;\n"
+        cpp_code += "          return oss.str();\n"
+        cpp_code += "        }"
+
+        return cpp_code
+
+    def _get_regs_struct_declaration(self) -> str:
+        cpp_code = f"  struct {self._get_regs_struct_name()}"
+        cpp_code += "  {\n"
+        for register, register_array in self.iterate_registers():
+            register_type = self._get_register_value_type(
+                register=register, register_array=register_array
+            )
+            if register_array is not None:
+                cpp_code += f"    {register_type} {register_array.name}_{register.name}"
+                cpp_code += f"[{register_array.length}];\n"
+            else:
+                cpp_code += f"    {register_type} {register.name};\n"
+        cpp_code += "\n"
+        cpp_code += (
+            "    friend std::ostream& operator<<(std::ostream& os, const "
+            + self._get_regs_struct_name()
+            + "& regs)\n"
+        )
+        cpp_code += "    {\n"
+        for register, register_array in self.iterate_registers():
+            if register.mode.software_can_read:
+                if register_array is not None:
+                    cpp_code += f"      for(size_t i = 0; i < {register_array.length}; i++){'{'}\n"
+                    cpp_code += f'        os << "{register_array.name}_{register.name}[" << i << "]'
+                    cpp_code += f': " << regs.{register_array.name}_{register.name}[i] << "\\n";\n'
+                    cpp_code += "      }\n"
+                else:
+                    cpp_code += f'      os << "{register.name}: " << regs.{register.name} '
+                    cpp_code += '<< "\\n";\n'
+        cpp_code += "      return os;\n"
+        cpp_code += "    }\n"
+        cpp_code += "\n"
+
+        cpp_code += "    operator std::string() const\n"
+        cpp_code += "    {\n"
+        cpp_code += "      std::ostringstream oss;\n"
+        cpp_code += "      oss << *this;\n"
+        cpp_code += "      return oss.str();\n"
+        cpp_code += "    }\n"
+        cpp_code += "  };\n\n"
+
+        return cpp_code
+
+    def _get_regs_struct_default_constant(self) -> str:
+        cpp_code = f"    static constexpr {self._get_regs_struct_name()} regs_init = {'{'}\n"
+        registers = []
+        for register, register_array in self.iterate_registers():
+            register_code = ""
+
+            if register_array is not None:
+                register_code += f"      .{register_array.name}_{register.name} = {'{'}\n"
+            else:
+                register_code += f"      .{register.name} = "
+
+            if register.fields:
+                default_value = f"{self._get_namespace(register, register_array)}default_value"
+            else:
+                default_value = "0"
+
+            if register_array is not None:
+                register_code += "        "
+                register_code += ",\n        ".join([default_value] * register_array.length)
+                register_code += f"\n      {'}'}"
+            else:
+                register_code += f"{default_value}"
+
+            registers.append(register_code)
+
+        cpp_code += ",\n".join(registers)
+
+        cpp_code += "\n    };\n\n"
+
+        return cpp_code
+
+    def _get_regs_struct_setter(self) -> str:
+        return f"    virtual void {self._regs_struct_setter_signature()} = 0;\n\n"
+
+    def _get_regs_struct_getter(self) -> str:
+        cpp_code = f"    virtual {self._get_regs_struct_name()} "
+        cpp_code += f"{self._regs_struct_getter_signature()} = 0;\n\n"
+
+        return cpp_code
